@@ -1,0 +1,79 @@
+#!/bin/sh
+# Lore pre-commit hook
+# Install: cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+WARN="\033[33m⚠️  LORE\033[0m"
+FAIL="\033[31m❌ LORE\033[0m"
+
+errors=0
+warnings=0
+
+# ── HARD BLOCKS ───────────────────────────────────────────────────────────────
+
+# 1. Code committed with draft PRD
+code_changes=$(git diff --cached --name-only \
+  | grep -v "^requirements/" \
+  | grep -v "^LORE.md" \
+  | grep -v "^PROJECT.md" \
+  | grep -v "^UNKNOWNS.md" \
+  | wc -l | tr -d ' ')
+
+if [ "$code_changes" -gt 0 ]; then
+  if ls requirements/active/*.md > /dev/null 2>&1; then
+    drafts=$(grep -l "status: draft" requirements/active/*.md 2>/dev/null)
+    if [ -n "$drafts" ]; then
+      echo "$FAIL PRD not locked — cannot commit code."
+      echo "     Draft: $drafts"
+      errors=$((errors + 1))
+    fi
+  fi
+fi
+
+# 2. LORE entry missing required fields
+if git diff --cached --name-only | grep -q "^LORE.md$"; then
+  new_entries=$(git diff --cached -- LORE.md \
+    | grep "^+### " | wc -l | tr -d ' ')
+  if [ "$new_entries" -gt 0 ]; then
+    has_keywords=$(git diff --cached -- LORE.md \
+      | grep "^+\[keywords::" | wc -l | tr -d ' ')
+    has_insight=$(git diff --cached -- LORE.md \
+      | grep "^+\[insight::" | wc -l | tr -d ' ')
+    if [ "$has_keywords" -lt "$new_entries" ] || [ "$has_insight" -lt "$new_entries" ]; then
+      echo "$FAIL LORE entry missing required fields (keywords:: and insight:: required)"
+      errors=$((errors + 1))
+    fi
+  fi
+fi
+
+# ── WARNINGS ──────────────────────────────────────────────────────────────────
+
+# 3. Code changed but LORE not updated in 14 days
+if [ "$code_changes" -gt 0 ] && [ -f "LORE.md" ]; then
+  last=$(git log -1 --format="%ct" -- LORE.md 2>/dev/null || echo 0)
+  now=$(date +%s)
+  days=$(( (now - last) / 86400 ))
+  if [ "$days" -gt 14 ]; then
+    echo "$WARN LORE.md not updated in $days days — any learnings from this change?"
+    warnings=$((warnings + 1))
+  fi
+fi
+
+# 4. Log backlog check (only if logs/ exists and has files)
+if [ -d "logs" ] && ls logs/*.md > /dev/null 2>&1; then
+  unreviewed=$(grep -rl "reviewed: false" logs/ 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$unreviewed" -gt 10 ]; then
+    echo "$WARN $unreviewed unreviewed logs — run 'weekly review' soon."
+    warnings=$((warnings + 1))
+  fi
+fi
+
+# ── RESULT ────────────────────────────────────────────────────────────────────
+
+if [ "$errors" -gt 0 ]; then
+  echo ""
+  echo "$FAIL $errors error(s) — commit blocked."
+  echo "     Emergency: git commit --no-verify"
+  exit 1
+fi
+
+exit 0
